@@ -1,0 +1,24 @@
+{
+  "name": "bughd-export",
+  "version": "0.1.0",
+  "description": "BugHD 错误导出",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "bin": {
+    "bughd": "./bughd"
+  },
+  "author": "likaci",
+  "license": "ISC",
+  "dependencies": {
+    "minimist": "^1.2.0",
+    "request": "latest",
+    "rx": "latest"
+  },
+  "devDependencies": {},
+  "keywords": [
+    "bughd",
+    "rxjs"
+  ]
+}

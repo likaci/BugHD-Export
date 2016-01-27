@@ -1,0 +1,225 @@
+#!/usr/bin/env node
+/**
+ * Created by liuwencai on 16/1/25.
+ */
+
+var Rx = require('rx');
+var request = require('request');
+var util = require('util');
+
+var argv = require('minimist')(process.argv.slice(2), {
+    alias: {
+        'token': 't',
+        'project': 'p',
+        'version': 'v',
+        'issue': 'i',
+        'crash': 'c',
+        'help': 'h'
+    }
+});
+
+/** @namespace argv.token */
+/** @namespace argv.project */
+/** @namespace argv.version */
+/** @namespace argv.issue */
+if (argv.token && argv.project && argv.version && argv.issue) {
+    //list crash
+    if (argv.issue == "all") {
+        rxIssue(argv.token, argv.project, argv.version)
+            .flatMap(function (issues) {
+                return Rx.Observable.fromArray(issues.datas);
+            })
+            .flatMap(function (issue) {
+                return Rx.Observable.zip(
+                    Rx.Observable.just(issue),
+                    rxCrash(argv.token, argv.project, argv.version, issue.id)
+                );
+            })
+            .subscribe(
+                function (x) {
+                    /** @namespace x[0].crashes_count */
+                    console.log(x[0].id + ' - ' + x[0].crashes_count + ' - ' + x[0].title);
+                    console.log(util.inspect(x[1].datas, false, null));
+                    if (x[0].crashes_count > x[1].datas.length) {
+                        throw 'crash count not equal';
+                    }
+                },
+                function (err) {
+                    console.log(err);
+                }
+            );
+    } else {
+        rxCrash(argv.token, argv.project, null, argv.issue)
+            .subscribe(
+                function (x) {
+                    console.log(util.inspect(x, false, null));
+                },
+                function (err) {
+                    console.log(err);
+                });
+    }
+} else if (argv.token && argv.project && argv.version) {
+    //list issue
+    rxIssue(argv.token, argv.project, argv.version)
+        .subscribe(function (issues) {
+            if (issues) {
+                issues.datas.forEach(function (issue) {
+                    console.log(issue.id + ' - ' + issue.crashes_count + ' - ' + issue.title);
+                });
+            }
+        });
+} else if (argv.token && argv.project) {
+    //list version
+    rxVersion(argv.token, argv.project)
+        .subscribe(function (version) {
+            console.log(version.id + ' - ' + version.full_version);
+        });
+
+} else if (argv.token) {
+    //list project
+    rxProject(argv.token)
+        .subscribe(function (projectArr) {
+            projectArr.forEach(function (project) {
+                console.log(project.id + ' - ' + project.name);
+            });
+        });
+
+} else {
+    argv.help = true;
+}
+
+if (argv.help) {
+    console.log(
+        'Usage:\n' +
+        '   bughd -t token                                        list project\n' +
+        '   bughd -t token -p project                             list version\n' +
+        '   bughd -t token -p project -v version                  list issues\n' +
+        '   bughd -t token -p project -v version -i issue         list crash\n' +
+        '   bughd -t token -p project -v version -i "all"         list all crash\n'
+    );
+    process.exit();
+}
+
+//region fun
+
+function rxRequest(url, qs) {
+    return Rx.Observable.create(function (observer) {
+        request({
+            url: url,
+            qs: qs
+        }, function (err, res, body) {
+            if (!err) {
+                observer.onNext(body);
+                observer.onCompleted();
+            } else {
+                observer.onError(err);
+            }
+        })
+    })
+}
+
+function rxProject(token) {
+    return rxRequest('http://api.bughd.com/projects', {access_token: token})
+        .map(function (projectJson) {
+            return JSON.parse(projectJson);
+        })
+        .filter(function (projectArr) {
+            if (projectArr.errors) {
+                console.log('获取项目列表失败 ' + projectArr.errors);
+                return false;
+            }
+            return true;
+        });
+}
+
+function rxVersion(token, project) {
+    return rxRequest('http://api.bughd.com/projects/' + project + '/full_versions?access_token=' + token)
+        .filter(function (versionJson) {
+            var versions = JSON.parse(versionJson);
+            if (versions.errors) {
+                console.log('获取版本列表失败 ' + versions.errors);
+                return false;
+            }
+            return true;
+        })
+        .flatMap(function (versionsJson) {
+            return JSON.parse(versionsJson);
+        });
+}
+
+function rxIssue(token, project, version) {
+    var url = 'http://api.bughd.com/projects/' + project + '/issues?access_token=' + token + '&full_version_id=' + version;
+    return rxRequest(url)
+        .map(function (issuesJson) {
+            return JSON.parse(issuesJson);
+        })
+        .filter(function (issues) {
+            if (issues.errors) {
+                console.log('获取错误列表失败 ' + versions.errors);
+                return false;
+            }
+            if (issues.total_count == 0) {
+                console.log('获取到0个错误, 请检查参数');
+                return false;
+            }
+            return true;
+        })
+        .flatMap(function (issues) {
+            return Rx.Observable.range(1, issues.total_pages)
+        })
+        .flatMap(function (pageIndex) {
+            return rxRequest(url + '&page=' + pageIndex);
+        })
+        .map(function (issuesJson) {
+            return JSON.parse(issuesJson);
+        })
+        .toArray()
+        .map(function (dataArray) {
+            dataArray.sort(
+                function (a, b) {
+                    return a.current_page > b.current_page ? 1 : -1;
+                }
+            );
+            var out = dataArray[0];
+            for (var i = 1; i < dataArray.length; i++) {
+                var data = dataArray[i];
+                out.current_page = out.current_page + '-' + data.current_page;
+                out.datas = out.datas.concat(data.datas)
+            }
+            return out;
+        });
+}
+
+function rxCrash(token, project, version, issue) {
+    var url = 'http://api.bughd.com/issues/' + issue + '/crashes?access_token=' + token + '&project_id=' + project;
+    return rxRequest(url)
+        .map(function (json) {
+            return JSON.parse(json);
+        })
+        .flatMap(function (crash) {
+            return Rx.Observable.range(1, crash.total_pages)
+        })
+        .flatMap(function (pageIndex) {
+            return rxRequest(url + '&page=' + pageIndex);
+        })
+        .map(function (issuesJson) {
+            return JSON.parse(issuesJson);
+        })
+        .toArray()
+        .map(function (dataArray) {
+            dataArray.sort(
+                function (a, b) {
+                    return a.current_page > b.current_page ? 1 : -1;
+                }
+            );
+            var out = dataArray[0];
+            for (var i = 1; i < dataArray.length; i++) {
+                var data = dataArray[i];
+                out.current_page = out.current_page + '-' + data.current_page;
+                out.datas = out.datas.concat(data.datas)
+            }
+            return out;
+        });
+}
+
+//endregion
